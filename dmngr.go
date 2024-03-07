@@ -3,6 +3,7 @@ package dmngr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -31,22 +32,19 @@ type PodRestartTimeResp struct {
 	T time.Time
 }
 
-func GetPodRestartTime(ctx context.Context, kcontext, namespace, podName string) tea.Cmd {
-	return func() tea.Msg {
-		t, err := getPodRestartTime(ctx, kcontext, namespace, podName)
-		if err != nil {
-			return Error{Message: err.Error()}
-		}
-		return PodRestartTimeResp{T: t}
-	}
-}
+// func GetPodRestartTime(ctx context.Context, kcontext, namespace, podName string) tea.Cmd {
+// 	return func() tea.Msg {
+// 		t, err := getPodRestartTime(ctx, kcontext, namespace, podName)
+// 		if err != nil {
+// 			return Error{Message: err.Error()}
+// 		}
+// 		return PodRestartTimeResp{T: t}
+// 	}
+// }
 
-func getPodRestartTime(ctx context.Context, kcontext, namespace, podName string) (time.Time, error) {
-	clientset := loadKubernetesConfig(kcontext)
-
+func getPodRestartTime(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string) (time.Time, error) {
 	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
-		fmt.Printf("Error getting pod description: %s\n", err.Error())
 		return time.Time{}, err
 	}
 	if pod.Status.StartTime != nil {
@@ -59,26 +57,24 @@ type LastLogTimeResp struct {
 	T time.Time
 }
 
-func GetLastLogTime(ctx context.Context, kcontext, namespace, podName string) tea.Cmd {
-	return func() tea.Msg {
-		timestamp, err := getLastLogTime(ctx, kcontext, namespace, podName)
-		if err != nil {
-			return Error{Message: err.Error()}
-		}
+// func GetLastLogTime(ctx context.Context, kcontext, namespace, podName string) tea.Cmd {
+// 	return func() tea.Msg {
+// 		timestamp, err := getLastLogTime(ctx, kcontext, namespace, podName)
+// 		if err != nil {
+// 			return Error{Message: err.Error()}
+// 		}
 
-		return LastLogTimeResp{T: timestamp}
-	}
-}
+// 		return LastLogTimeResp{T: timestamp}
+// 	}
+// }
 
-func getLastLogTime(ctx context.Context, kcontext, namespace, podName string) (time.Time, error) {
+func getLastLogTime(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string) (time.Time, error) {
 	var lastLogTimeString string
 	var lastLogTime time.Time
 
-	clientset := loadKubernetesConfig(kcontext)
 	podLogs, err := clientset.CoreV1().Pods(namespace).GetLogs(podName, &v1.PodLogOptions{Container: containerName, Timestamps: true}).Stream(ctx)
 	if err != nil {
-		fmt.Printf("Error getting pod logs: %s\n", err)
-		return lastLogTime, nil
+		return lastLogTime, err
 	}
 
 	defer podLogs.Close()
@@ -90,7 +86,6 @@ func getLastLogTime(ctx context.Context, kcontext, namespace, podName string) (t
 			if err.Error() == "EOF" {
 				break
 			}
-			fmt.Printf("Error reading pod logs: %s\n", err)
 			break
 		}
 		logStream := string(buf[:bytesRead])
@@ -101,13 +96,11 @@ func getLastLogTime(ctx context.Context, kcontext, namespace, podName string) (t
 				lastLogTimeString = line
 			}
 		}
-		fmt.Print()
 	}
 
 	lastLogTime, err = time.Parse(time.RFC3339, strings.Split(lastLogTimeString, " ")[0])
 	if err != nil {
-		fmt.Println(err)
-		return lastLogTime, nil
+		return lastLogTime, err
 	}
 
 	return lastLogTime, nil
@@ -119,18 +112,18 @@ type LastImageUpdateResp struct {
 	Message string
 }
 
-func GetLastImageUpdateTime(ctx context.Context, kcontext, namespace, resourceName string, resourceType WorkloadType) tea.Cmd {
-	return func() tea.Msg {
-		timestamp, image, err := getLastImageUpdateTime(ctx, kcontext, namespace, resourceName, resourceType)
-		if err != nil {
-			return Error{Message: err.Error()}
-		}
+// func GetLastImageUpdateTime(ctx context.Context, kcontext, namespace, resourceName string, resourceType WorkloadType) tea.Cmd {
+// 	return func() tea.Msg {
+// 		timestamp, image, err := getLastImageUpdateTime(ctx, kcontext, namespace, resourceName, resourceType)
+// 		if err != nil {
+// 			return Error{Message: err.Error()}
+// 		}
 
-		return LastImageUpdateResp{T: timestamp, I: image}
-	}
-}
-func getLastImageUpdateTime(ctx context.Context, kcontext, namespace, resourceName string, resourceType WorkloadType) (time.Time, string, error) {
-	clientset := loadKubernetesConfig(kcontext)
+//			return LastImageUpdateResp{T: timestamp, I: image}
+//		}
+//	}
+
+func getLastImageUpdateTime(ctx context.Context, clientset *kubernetes.Clientset, namespace, resourceName string, resourceType WorkloadType) (time.Time, string, error) {
 	var lastImageUpdateTime time.Time
 	var currentImageVersion string
 
@@ -162,33 +155,33 @@ type UpdateImageResp struct {
 
 func UpdateImage(ctx context.Context, kcontext, resourceName, namespace, image string, resourceType WorkloadType, dryrun bool) tea.Cmd {
 	return func() tea.Msg {
-		err := updateImage(ctx, kcontext, resourceName, namespace, image, resourceType, dryrun)
+		ret, err := updateImage(kcontext, resourceName, namespace, image, resourceType, dryrun)
 		if err != nil {
 			return Error{Message: err.Error()}
 		}
 
-		return UpdateImageResp{Message: "Updated"}
+		return UpdateImageResp{Message: ret}
 	}
 }
 
-func updateImage(ctx context.Context, kcontext, resourceName, namespace, image string, resourceType WorkloadType, dryrun bool) error {
+func updateImage(kcontext, resourceName, namespace, image string, resourceType WorkloadType, dryrun bool) (string, error) {
 	var err error
 
-	clientset := loadKubernetesConfig(kcontext)
-
+	clientset, err := loadKubernetesConfig(kcontext)
+	ret := ""
 	switch resourceType {
 	case DeploymentString:
-		err = updateDeploymentImage(clientset, resourceName, namespace, image, dryrun)
+		ret, err = updateDeploymentImage(clientset, resourceName, namespace, image, dryrun)
 	case StatefulSetsString:
-		err = updateStatefulsetImage(clientset, resourceName, namespace, image, dryrun)
+		ret, err = updateStatefulsetImage(clientset, resourceName, namespace, image, dryrun)
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
-	return nil
+	return ret, nil
 }
 
-func updateDeploymentImage(clientset *kubernetes.Clientset, resourceName, namespace, image string, dryrun bool) error {
+func updateDeploymentImage(clientset *kubernetes.Clientset, resourceName, namespace, image string, dryrun bool) (string, error) {
 	startTime := time.Now()
 	timeout := timeoutDuration * time.Second
 
@@ -198,31 +191,28 @@ func updateDeploymentImage(clientset *kubernetes.Clientset, resourceName, namesp
 	}
 	deployment, err := clientset.AppsV1().Deployments(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	deployment.Spec.Template.Spec.Containers[0].Image = image
 
 	newDeployment, err := clientset.AppsV1().Deployments(namespace).Update(context.TODO(), deployment, updateOptions)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if dryrun {
 		jsonData, err := json.MarshalIndent(newDeployment, "", "  ")
 		if err != nil {
-			fmt.Println("Error:", err)
-			return nil
+			return "", nil
 		}
-
-		fmt.Println("New Deployment:", string(jsonData))
-		return nil
+		return string(jsonData), nil
 	}
 
 	for {
 		deployment, err := clientset.AppsV1().Deployments(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		// Check if the update has been rolled out to all replicas
@@ -234,16 +224,15 @@ func updateDeploymentImage(clientset *kubernetes.Clientset, resourceName, namesp
 		}
 
 		if time.Since(startTime) > timeout {
-			return fmt.Errorf("timeout waiting for deployment rollout")
+			return "", errors.New("timeout")
 		}
 
-		fmt.Println("Waiting for Deployment rollout...")
 		time.Sleep(5 * time.Second)
 	}
-	return nil
+	return "", nil
 }
 
-func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, namespace, image string, dryrun bool) error {
+func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, namespace, image string, dryrun bool) (string, error) {
 	startTime := time.Now()
 	timeout := timeoutDuration * time.Second
 	updateOptions := metav1.UpdateOptions{}
@@ -253,30 +242,28 @@ func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, names
 
 	statefulSet, err := clientset.AppsV1().StatefulSets(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	statefulSet.Spec.Template.Spec.Containers[1].Image = image
 
 	newStatefulSet, err := clientset.AppsV1().StatefulSets(namespace).Update(context.TODO(), statefulSet, updateOptions)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if dryrun {
 		jsonData, err := json.MarshalIndent(newStatefulSet, "", "  ")
 		if err != nil {
-			fmt.Println("Error:", err)
-			return nil
+			return "", nil
 		}
-		fmt.Println("New Deployment:", string(jsonData))
-		return nil
+		return string(jsonData), nil
 	}
 
 	for {
 		newStatefulSet, err = clientset.AppsV1().StatefulSets(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		if newStatefulSet.Status.UpdatedReplicas == newStatefulSet.Status.Replicas {
@@ -286,14 +273,13 @@ func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, names
 		}
 
 		if time.Since(startTime) > timeout {
-			return fmt.Errorf("timeout waiting for deployment rollout")
+			return "", errors.New("timeout")
 		}
 
-		fmt.Println("Waiting for StatefulSet update...")
 		time.Sleep(5 * time.Second)
 	}
 
-	return nil
+	return "", nil
 }
 
 type AllKcontextResp struct {
@@ -316,7 +302,6 @@ func getAllKcontext() ([]string, error) {
 
 	config, err := clientcmd.NewDefaultClientConfigLoadingRules().Load()
 	if err != nil {
-		fmt.Printf("Error building config: %s\n", err)
 		return clusters, err
 	}
 	for _, context := range config.Contexts {
@@ -325,7 +310,7 @@ func getAllKcontext() ([]string, error) {
 	return clusters, nil
 }
 
-func loadKubernetesConfig(kContext string) *kubernetes.Clientset {
+func loadKubernetesConfig(kContext string) (*kubernetes.Clientset, error) {
 	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(),
 		&clientcmd.ConfigOverrides{CurrentContext: kContext},
@@ -333,12 +318,179 @@ func loadKubernetesConfig(kContext string) *kubernetes.Clientset {
 
 	config, err := kubeconfig.ClientConfig()
 	if err != nil {
-		fmt.Println(fmt.Errorf("failed to load the config: %v", err))
+		return nil, err
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		fmt.Println(fmt.Errorf("failed to read the config: %v", err))
+		return nil, err
 	}
-	return clientset
+	return clientset, nil
+}
+
+type AllPodsResp struct {
+	Pods []string
+}
+
+func GetAllPods(ctx context.Context, kcontext, namespace string) tea.Cmd {
+	return func() tea.Msg {
+		pods, err := getAllPods(ctx, kcontext, namespace)
+		if err != nil {
+			return Error{Message: err.Error()}
+		}
+		return AllPodsResp{Pods: pods}
+	}
+}
+
+func getAllPods(ctx context.Context, kcontext, namespace string) ([]string, error) {
+	clientset, err := loadKubernetesConfig(kcontext)
+	if err != nil {
+		return nil, err
+	}
+
+	var pods []string
+	podList, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return pods, err
+	}
+	for _, pod := range podList.Items {
+		pods = append(pods, pod.Name)
+	}
+	return pods, nil
+}
+
+type Target struct {
+	Name            string
+	CurrentImage    string
+	LastRestart     time.Time
+	LastLogTime     time.Time
+	LastImageUpdate time.Time
+}
+
+type AllClustersInfoResp struct {
+	Targets []Target
+}
+
+func GetAllClustersInfo(ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		ret, err := getAllClustersInfo(ctx)
+		if err != nil {
+			return Error{Message: err.Error()}
+		}
+		return AllClustersInfoResp{Targets: ret}
+	}
+}
+
+func getAllClustersInfo(ctx context.Context) ([]Target, error) {
+	const dev = "dev"
+	const namespace = "default"
+	const webapp = "webapp"
+	const api = "omiq-api"
+	contextList := make([]string, 0)
+	targetList := make([]Target, 0)
+
+	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		clientcmd.NewDefaultClientConfigLoadingRules(),
+		&clientcmd.ConfigOverrides{},
+	)
+	config, err := kubeconfig.RawConfig()
+	if err != nil {
+		return []Target{}, err
+	}
+
+	// get all contexts
+	contexts := config.Contexts
+	for contextName := range contexts {
+		if strings.Contains(contextName, dev) {
+			contextList = append(contextList, contextName)
+		}
+	}
+
+	// iterate all contexts to get deployment info
+	for _, c := range contextList {
+		clientset, _ := loadKubernetesConfig(c)
+		lastImageUpdateTime, currentImageVersion, err := getLastImageUpdateTime(ctx, clientset, namespace, webapp, DeploymentString)
+		if err != nil {
+			continue
+		}
+		podsName, err := getWebPodsName(clientset, namespace, webapp)
+		if err != nil {
+			continue
+		}
+		lastPodRestart, err := getPodRestartTime(ctx, clientset, namespace, podsName[0])
+		if err != nil {
+			lastPodRestart = time.Time{}
+		}
+
+		lastLogTime, err := getLastLogTime(ctx, clientset, namespace, podsName[0])
+		if err != nil {
+			lastLogTime = lastPodRestart
+		}
+
+		targetList = append(targetList, Target{
+			Name:            webapp,
+			CurrentImage:    currentImageVersion,
+			LastImageUpdate: lastImageUpdateTime,
+			LastLogTime:     lastLogTime,
+			LastRestart:     lastPodRestart,
+		})
+	}
+
+	for _, c := range contextList {
+		clientset, _ := loadKubernetesConfig(c)
+		lastImageUpdateTime, currentImageVersion, err := getLastImageUpdateTime(ctx, clientset, namespace, api, StatefulSetsString)
+		if err != nil {
+			continue
+		}
+		podsName, err := getApiPodsName(clientset, namespace, api)
+		if err != nil {
+			continue
+		}
+		lastPodRestart, err := getPodRestartTime(ctx, clientset, namespace, podsName[0])
+		if err != nil {
+			continue
+		}
+		lastLogTime, err := getLastLogTime(ctx, clientset, namespace, podsName[0])
+		if err != nil {
+			lastLogTime = lastPodRestart
+		}
+		targetList = append(targetList, Target{
+			Name:            api,
+			CurrentImage:    currentImageVersion,
+			LastImageUpdate: lastImageUpdateTime,
+			LastRestart:     lastPodRestart,
+			LastLogTime:     lastLogTime,
+		})
+	}
+
+	return targetList, nil
+
+}
+
+func getApiPodsName(clientset *kubernetes.Clientset, namespace, deploymentName string) ([]string, error) {
+	podNames := make([]string, 0)
+	pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", deploymentName),
+	})
+	if err != nil {
+		return podNames, err
+	}
+	for _, pod := range pods.Items {
+		podNames = append(podNames, pod.GetName())
+	}
+	return podNames, nil
+}
+
+func getWebPodsName(clientset *kubernetes.Clientset, namespace, deploymentName string) ([]string, error) {
+	podNames := make([]string, 0)
+	pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("run=%s", deploymentName),
+	})
+	if err != nil {
+		return podNames, err
+	}
+	for _, pod := range pods.Items {
+		podNames = append(podNames, pod.GetName())
+	}
+	return podNames, nil
 }
