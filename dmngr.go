@@ -2,6 +2,7 @@ package dmngr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -123,16 +124,16 @@ func GetLastImageUpdateTime(kcontext, namespace, resourceName string, resourceTy
 	return lastImageUpdateTime, currentImageVersion, nil
 }
 
-func UpdateImage(kcontext, resourceName, namespace, image string, resourceType WorkloadType) error {
+func UpdateImage(kcontext, resourceName, namespace, image string, resourceType WorkloadType, dryrun bool) error {
 	var err error
 
 	clientset := loadKubernetesConfig(kcontext)
 
 	switch resourceType {
 	case DeploymentString:
-		err = updateDeploymentImage(clientset, resourceName, namespace, image)
+		err = updateDeploymentImage(clientset, resourceName, namespace, image, dryrun)
 	case StatefulSetsString:
-		err = updateStatefulsetImage(clientset, resourceName, namespace, image)
+		err = updateStatefulsetImage(clientset, resourceName, namespace, image, dryrun)
 	}
 	if err != nil {
 		return err
@@ -140,7 +141,11 @@ func UpdateImage(kcontext, resourceName, namespace, image string, resourceType W
 	return nil
 }
 
-func updateDeploymentImage(clientset *kubernetes.Clientset, resourceName, namespace, image string) error {
+func updateDeploymentImage(clientset *kubernetes.Clientset, resourceName, namespace, image string, dryrun bool) error {
+	updateOptions := metav1.UpdateOptions{}
+	if dryrun {
+		updateOptions.DryRun = []string{metav1.DryRunAll}
+	}
 	deployment, err := clientset.AppsV1().Deployments(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -148,13 +153,29 @@ func updateDeploymentImage(clientset *kubernetes.Clientset, resourceName, namesp
 
 	deployment.Spec.Template.Spec.Containers[0].Image = image
 
-	if _, err := clientset.AppsV1().Deployments(namespace).Update(context.TODO(), deployment, metav1.UpdateOptions{}); err != nil {
+	newDeployment, err := clientset.AppsV1().Deployments(namespace).Update(context.TODO(), deployment, updateOptions)
+	if err != nil {
 		return err
+	}
+
+	if dryrun {
+		jsonData, err := json.MarshalIndent(newDeployment, "", "  ")
+		if err != nil {
+			fmt.Println("Error:", err)
+			return nil
+		}
+
+		fmt.Println("New Deployment:", string(jsonData))
 	}
 	return nil
 }
 
-func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, namespace, image string) error {
+func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, namespace, image string, dryrun bool) error {
+	updateOptions := metav1.UpdateOptions{}
+	if dryrun {
+		updateOptions.DryRun = []string{metav1.DryRunAll}
+	}
+
 	statefulSet, err := clientset.AppsV1().StatefulSets(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -162,9 +183,20 @@ func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, names
 
 	statefulSet.Spec.Template.Spec.Containers[1].Image = image
 
-	if _, err := clientset.AppsV1().StatefulSets(namespace).Update(context.TODO(), statefulSet, metav1.UpdateOptions{}); err != nil {
+	newStatefulSet, err := clientset.AppsV1().StatefulSets(namespace).Update(context.TODO(), statefulSet, updateOptions)
+	if err != nil {
 		return err
 	}
+	if dryrun {
+		jsonData, err := json.MarshalIndent(newStatefulSet, "", "  ")
+		if err != nil {
+			fmt.Println("Error:", err)
+			return nil
+		}
+
+		fmt.Println("New Deployment:", string(jsonData))
+	}
+
 	return nil
 }
 
