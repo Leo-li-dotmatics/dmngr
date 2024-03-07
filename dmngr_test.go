@@ -26,3 +26,20 @@ func TestGetLastImageUpdateTime(t *testing.T) {
 
 	fmt.Printf("The image %s of the resource type %s in the namespace of %s is %s, updated at %s\n", currentImageVersion, resourceType, namespace, resourceName, lastImageUpdateTime)
 }
+
+func TestGetLastLogTime(t *testing.T) {
+	const namespace = "default"
+	const resourceName = "omiq-api-0"
+
+	lastImageUpdateTime, err := GetLastLogTime("gke_omiq-dev_us-central1-a_dev-cluster-us", namespace, resourceName)
+	if err != nil {
+		fmt.Println(fmt.Errorf("failed to get the timestamp from GetPodRestartTime: %v", err))
+	}
+
+	fmt.Println(lastImageUpdateTime)
+}
+
+func TestGetAllKcontext(t *testing.T) {
+	clusters := GetAllKcontext()
+	fmt.Println(clusters)
+}

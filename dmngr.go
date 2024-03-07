@@ -3,8 +3,10 @@ package dmngr
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -16,6 +18,7 @@ const (
 	DeploymentString   WorkloadType = "deployment"
 	StatefulSetsString WorkloadType = "statefulset"
 )
+const containerName = "backend"
 
 func loadKubernetesConfig(kContext string) *kubernetes.Clientset {
 	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
@@ -34,6 +37,7 @@ func loadKubernetesConfig(kContext string) *kubernetes.Clientset {
 	}
 	return clientset
 }
+
 func GetPodRestartTime(kcontext, namespace, podName string) (time.Time, error) {
 
 	clientset := loadKubernetesConfig(kcontext)
@@ -47,6 +51,49 @@ func GetPodRestartTime(kcontext, namespace, podName string) (time.Time, error) {
 		return pod.Status.StartTime.Time, nil
 	}
 	return pod.CreationTimestamp.Time, nil
+}
+
+func GetLastLogTime(kcontext, namespace, podName string) (time.Time, error) {
+	var lastLogTimeString string
+	var lastLogTime time.Time
+
+	clientset := loadKubernetesConfig(kcontext)
+	podLogs, err := clientset.CoreV1().Pods(namespace).GetLogs(podName, &v1.PodLogOptions{Container: containerName, Timestamps: true}).Stream(context.Background())
+	if err != nil {
+		fmt.Printf("Error getting pod logs: %s\n", err)
+		return lastLogTime, nil
+	}
+
+	defer podLogs.Close()
+
+	buf := make([]byte, 4096)
+	for {
+		bytesRead, err := podLogs.Read(buf)
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			fmt.Printf("Error reading pod logs: %s\n", err)
+			break
+		}
+		logStream := string(buf[:bytesRead])
+
+		lines := strings.Split(logStream, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "\"UserID\"") {
+				lastLogTimeString = line
+			}
+		}
+		fmt.Print()
+	}
+
+	lastLogTime, err = time.Parse(time.RFC3339, strings.Split(lastLogTimeString, " ")[0])
+	if err != nil {
+		fmt.Println(err)
+		return lastLogTime, nil
+	}
+
+	return lastLogTime, nil
 }
 
 func GetLastImageUpdateTime(kcontext, namespace, resourceName string, resourceType WorkloadType) (time.Time, string, error) {
@@ -119,4 +166,18 @@ func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, names
 		return err
 	}
 	return nil
+}
+
+func GetAllKcontext() []string {
+	clusters := make([]string, 0)
+
+	config, err := clientcmd.NewDefaultClientConfigLoadingRules().Load()
+	if err != nil {
+		fmt.Printf("Error building config: %s\n", err)
+		return clusters
+	}
+	for _, context := range config.Contexts {
+		clusters = append(clusters, context.Cluster)
+	}
+	return clusters
 }
