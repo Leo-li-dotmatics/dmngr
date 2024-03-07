@@ -48,13 +48,25 @@ func TestGetAllKcontext(t *testing.T) {
 	fmt.Println(clusters)
 }
 
-func TestUpdateImage(t *testing.T) {
+func TestUpdateImageStatefulSet(t *testing.T) {
 	const cluster = "gke_omiq-dev_us-central1-a_dev-cluster-us"
 	const namespace = "default"
 	const resourceName = "omiq-api"
-	const image = "gcr.io/omiq-dev/api:pr-1507"
-	const dryrun = true
+	const image = "gcr.io/omiq-dev/api:pr-1505" // 1507
+	const dryrun = false
 	err := UpdateImage(cluster, resourceName, namespace, image, StatefulSetsString, dryrun)
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
+func TestUpdateImageDeployment(t *testing.T) {
+	const cluster = "gke_omiq-dev_us-central1-a_dev-cluster-us"
+	const namespace = "default"
+	const resourceName = "webapp"
+	const image = "gcr.io/omiq-dev/webapp:latest"
+	const dryrun = true
+	err := UpdateImage(cluster, resourceName, namespace, image, DeploymentString, dryrun)
 	if err != nil {
 		fmt.Println(err)
 	}

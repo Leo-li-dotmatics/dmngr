@@ -20,7 +20,7 @@ const (
 	StatefulSetsString WorkloadType = "statefulset"
 )
 const containerName = "backend"
-
+const timeoutDuration = 60 //seconds
 func loadKubernetesConfig(kContext string) *kubernetes.Clientset {
 	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(),
@@ -142,6 +142,9 @@ func UpdateImage(kcontext, resourceName, namespace, image string, resourceType W
 }
 
 func updateDeploymentImage(clientset *kubernetes.Clientset, resourceName, namespace, image string, dryrun bool) error {
+	startTime := time.Now()
+	timeout := timeoutDuration * time.Second
+
 	updateOptions := metav1.UpdateOptions{}
 	if dryrun {
 		updateOptions.DryRun = []string{metav1.DryRunAll}
@@ -166,11 +169,36 @@ func updateDeploymentImage(clientset *kubernetes.Clientset, resourceName, namesp
 		}
 
 		fmt.Println("New Deployment:", string(jsonData))
+		return nil
+	}
+
+	for {
+		deployment, err := clientset.AppsV1().Deployments(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		// Check if the update has been rolled out to all replicas
+		if deployment.Status.UpdatedReplicas == deployment.Status.Replicas {
+			// Check if all pods are ready
+			if deployment.Status.ReadyReplicas == deployment.Status.Replicas {
+				break
+			}
+		}
+
+		if time.Since(startTime) > timeout {
+			return fmt.Errorf("timeout waiting for deployment rollout")
+		}
+
+		fmt.Println("Waiting for Deployment rollout...")
+		time.Sleep(5 * time.Second)
 	}
 	return nil
 }
 
 func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, namespace, image string, dryrun bool) error {
+	startTime := time.Now()
+	timeout := timeoutDuration * time.Second
 	updateOptions := metav1.UpdateOptions{}
 	if dryrun {
 		updateOptions.DryRun = []string{metav1.DryRunAll}
@@ -187,14 +215,35 @@ func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, names
 	if err != nil {
 		return err
 	}
+
 	if dryrun {
 		jsonData, err := json.MarshalIndent(newStatefulSet, "", "  ")
 		if err != nil {
 			fmt.Println("Error:", err)
 			return nil
 		}
-
 		fmt.Println("New Deployment:", string(jsonData))
+		return nil
+	}
+
+	for {
+		newStatefulSet, err = clientset.AppsV1().StatefulSets(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		if newStatefulSet.Status.UpdatedReplicas == newStatefulSet.Status.Replicas {
+			if newStatefulSet.Status.ReadyReplicas == newStatefulSet.Status.Replicas {
+				break
+			}
+		}
+
+		if time.Since(startTime) > timeout {
+			return fmt.Errorf("timeout waiting for deployment rollout")
+		}
+
+		fmt.Println("Waiting for StatefulSet update...")
+		time.Sleep(5 * time.Second)
 	}
 
 	return nil
