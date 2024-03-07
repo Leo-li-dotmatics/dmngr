@@ -361,6 +361,7 @@ func getAllPods(ctx context.Context, kcontext, namespace string) ([]string, erro
 
 type Target struct {
 	Name            string
+	Cluster         string
 	CurrentImage    string
 	LastRestart     time.Time
 	LastLogTime     time.Time
@@ -429,6 +430,7 @@ func getAllClustersInfo(ctx context.Context) ([]Target, error) {
 
 		targetList = append(targetList, Target{
 			Name:            webapp,
+			Cluster:         c,
 			CurrentImage:    currentImageVersion,
 			LastImageUpdate: lastImageUpdateTime,
 			LastLogTime:     lastLogTime,
