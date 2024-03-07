@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -21,29 +22,29 @@ const (
 )
 const containerName = "backend"
 const timeoutDuration = 60 //seconds
-func loadKubernetesConfig(kContext string) *kubernetes.Clientset {
-	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(),
-		&clientcmd.ConfigOverrides{CurrentContext: kContext},
-	)
 
-	config, err := kubeconfig.ClientConfig()
-	if err != nil {
-		fmt.Println(fmt.Errorf("failed to load the config: %v", err))
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		fmt.Println(fmt.Errorf("failed to read the config: %v", err))
-	}
-	return clientset
+type Error struct {
+	Message string
 }
 
-func GetPodRestartTime(kcontext, namespace, podName string) (time.Time, error) {
+type PodRestartTimeResp struct {
+	T time.Time
+}
 
+func GetPodRestartTime(ctx context.Context, kcontext, namespace, podName string) tea.Cmd {
+	return func() tea.Msg {
+		t, err := getPodRestartTime(ctx, kcontext, namespace, podName)
+		if err != nil {
+			return Error{Message: err.Error()}
+		}
+		return PodRestartTimeResp{T: t}
+	}
+}
+
+func getPodRestartTime(ctx context.Context, kcontext, namespace, podName string) (time.Time, error) {
 	clientset := loadKubernetesConfig(kcontext)
 
-	pod, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		fmt.Printf("Error getting pod description: %s\n", err.Error())
 		return time.Time{}, err
@@ -54,12 +55,27 @@ func GetPodRestartTime(kcontext, namespace, podName string) (time.Time, error) {
 	return pod.CreationTimestamp.Time, nil
 }
 
-func GetLastLogTime(kcontext, namespace, podName string) (time.Time, error) {
+type LastLogTimeResp struct {
+	T time.Time
+}
+
+func GetLastLogTime(ctx context.Context, kcontext, namespace, podName string) tea.Cmd {
+	return func() tea.Msg {
+		timestamp, err := getLastLogTime(ctx, kcontext, namespace, podName)
+		if err != nil {
+			return Error{Message: err.Error()}
+		}
+
+		return LastLogTimeResp{T: timestamp}
+	}
+}
+
+func getLastLogTime(ctx context.Context, kcontext, namespace, podName string) (time.Time, error) {
 	var lastLogTimeString string
 	var lastLogTime time.Time
 
 	clientset := loadKubernetesConfig(kcontext)
-	podLogs, err := clientset.CoreV1().Pods(namespace).GetLogs(podName, &v1.PodLogOptions{Container: containerName, Timestamps: true}).Stream(context.Background())
+	podLogs, err := clientset.CoreV1().Pods(namespace).GetLogs(podName, &v1.PodLogOptions{Container: containerName, Timestamps: true}).Stream(ctx)
 	if err != nil {
 		fmt.Printf("Error getting pod logs: %s\n", err)
 		return lastLogTime, nil
@@ -97,21 +113,37 @@ func GetLastLogTime(kcontext, namespace, podName string) (time.Time, error) {
 	return lastLogTime, nil
 }
 
-func GetLastImageUpdateTime(kcontext, namespace, resourceName string, resourceType WorkloadType) (time.Time, string, error) {
+type LastImageUpdateResp struct {
+	T       time.Time
+	I       string
+	Message string
+}
+
+func GetLastImageUpdateTime(ctx context.Context, kcontext, namespace, resourceName string, resourceType WorkloadType) tea.Cmd {
+	return func() tea.Msg {
+		timestamp, image, err := getLastImageUpdateTime(ctx, kcontext, namespace, resourceName, resourceType)
+		if err != nil {
+			return Error{Message: err.Error()}
+		}
+
+		return LastImageUpdateResp{T: timestamp, I: image}
+	}
+}
+func getLastImageUpdateTime(ctx context.Context, kcontext, namespace, resourceName string, resourceType WorkloadType) (time.Time, string, error) {
 	clientset := loadKubernetesConfig(kcontext)
 	var lastImageUpdateTime time.Time
 	var currentImageVersion string
 
 	switch resourceType {
 	case DeploymentString:
-		deployment, err := clientset.AppsV1().Deployments(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
+		deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, resourceName, metav1.GetOptions{})
 		if err != nil {
 			return time.Time{}, "", err
 		}
 		lastImageUpdateTime = deployment.CreationTimestamp.Time
 		currentImageVersion = deployment.Spec.Template.Spec.Containers[0].Image
 	case StatefulSetsString:
-		statefulSet, err := clientset.AppsV1().StatefulSets(namespace).Get(context.TODO(), resourceName, metav1.GetOptions{})
+		statefulSet, err := clientset.AppsV1().StatefulSets(namespace).Get(ctx, resourceName, metav1.GetOptions{})
 		if err != nil {
 			return time.Time{}, "", err
 		}
@@ -124,7 +156,22 @@ func GetLastImageUpdateTime(kcontext, namespace, resourceName string, resourceTy
 	return lastImageUpdateTime, currentImageVersion, nil
 }
 
-func UpdateImage(kcontext, resourceName, namespace, image string, resourceType WorkloadType, dryrun bool) error {
+type UpdateImageResp struct {
+	Message string
+}
+
+func UpdateImage(ctx context.Context, kcontext, resourceName, namespace, image string, resourceType WorkloadType, dryrun bool) tea.Cmd {
+	return func() tea.Msg {
+		err := updateImage(ctx, kcontext, resourceName, namespace, image, resourceType, dryrun)
+		if err != nil {
+			return Error{Message: err.Error()}
+		}
+
+		return UpdateImageResp{Message: "Updated"}
+	}
+}
+
+func updateImage(ctx context.Context, kcontext, resourceName, namespace, image string, resourceType WorkloadType, dryrun bool) error {
 	var err error
 
 	clientset := loadKubernetesConfig(kcontext)
@@ -249,16 +296,49 @@ func updateStatefulsetImage(clientset *kubernetes.Clientset, resourceName, names
 	return nil
 }
 
-func GetAllKcontext() []string {
+type AllKcontextResp struct {
+	Clusters []string
+}
+
+func GetAllKcontext() tea.Cmd {
+	return func() tea.Msg {
+		clusters, err := getAllKcontext()
+		if err != nil {
+			return Error{Message: err.Error()}
+		}
+
+		return AllKcontextResp{Clusters: clusters}
+	}
+}
+
+func getAllKcontext() ([]string, error) {
 	clusters := make([]string, 0)
 
 	config, err := clientcmd.NewDefaultClientConfigLoadingRules().Load()
 	if err != nil {
 		fmt.Printf("Error building config: %s\n", err)
-		return clusters
+		return clusters, err
 	}
 	for _, context := range config.Contexts {
 		clusters = append(clusters, context.Cluster)
 	}
-	return clusters
+	return clusters, nil
+}
+
+func loadKubernetesConfig(kContext string) *kubernetes.Clientset {
+	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		clientcmd.NewDefaultClientConfigLoadingRules(),
+		&clientcmd.ConfigOverrides{CurrentContext: kContext},
+	)
+
+	config, err := kubeconfig.ClientConfig()
+	if err != nil {
+		fmt.Println(fmt.Errorf("failed to load the config: %v", err))
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		fmt.Println(fmt.Errorf("failed to read the config: %v", err))
+	}
+	return clientset
 }
